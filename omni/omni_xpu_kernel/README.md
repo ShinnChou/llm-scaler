@@ -494,6 +494,64 @@ if rotary.kitchen_rope_fast_supported(x, freqs_cis):
 Callers should use the capability query before selecting a specialized native
 route and preserve the established PyTorch fallback.
 
+## Compiled inference
+
+The public tensor interfaces in `norm`, `int8`, `fp8`, `gguf`, `svdq`,
+`rotary`, `cute`, `sdp`, `linear`, and `layout` have explicit compiler
+contracts. Native calls use dispatcher operators with FakeTensor output
+metadata; ordinary Torch wrappers remain traceable Torch operations.
+Execution uses the existing kernels and preserves their device, dtype,
+shape, layout, and option restrictions.
+
+```python
+with torch.inference_mode():
+    compiled_norm = torch.compile(norm.rms_norm, fullgraph=True)
+    output = compiled_norm(weight, activation, eps=1e-6)
+```
+
+These are inference interfaces, with no registered backward. In-place
+normalization, SVDQ accumulation, and rotary calls declare their mutations;
+wrappers preserve returned input aliases. Seeded INT8 rounding and explicit
+FP8 RNG tensors retain their existing random-number contracts. Standalone SDP
+and FP8 GEMM preserve ordered runtime cache effects.
+
+`linear.try_onednn_w8a16_fp8` is an explicit eager boundary: primitive creation
+can return a tensor or fail with `None`, updating the negative cache. It works
+in a compiled caller with graph breaks enabled. For `fullgraph=True`, probe
+availability before entering the graph and call `linear.onednn_w8a16_fp8`
+inside the selected region. Capability and cache-management functions belong
+outside fullgraph tensor regions.
+
+Compiler contracts do not make an unavailable native route available. In
+particular, `norm.rms_norm_gate_residual` retains its PTL-H restriction. The
+finite tests in `tests/test_torch_compile_api.py` cover the public tensor
+inventory, fullgraph outputs and input state, aliases, dispatcher schemas,
+selected dynamic shapes, and runtime controls. They do not establish support
+for every device, shape, layout, or option combination.
+
+Native dispatcher operators are opaque to Inductor. Compilation can fuse
+surrounding Torch operations, but these boundaries do not expose the native
+SYCL or oneDNN implementation for cross-operator fusion.
+
+Operator-level numerical equality does not guarantee model-level equality.
+Inductor fusion can change FP16/BF16 intermediate rounding; validate the
+compiled model against its own accuracy requirements. For numerical diagnosis,
+where the installed Inductor exposes `emulate_precision_casts`, select it
+explicitly to preserve eager low-precision casts:
+
+```python
+compiled_model = torch.compile(
+    model,
+    backend="inductor",
+    options={"emulate_precision_casts": True},
+)
+```
+
+This compiler policy can affect performance and is not a universal bitwise
+accuracy guarantee. The library does not change it globally. PyTorch describes
+backend isolation and model-quality checks in its
+[compiled-model numerical guidance](https://docs.pytorch.org/blog/training-production-ai-models/).
+
 ## Debug logging
 
 Native logging is disabled by default. Enable all modules or a comma-separated

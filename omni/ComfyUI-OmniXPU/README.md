@@ -138,6 +138,23 @@ OMNIXPU_MEDIAN_STRICT_INDICES=1
 median workaround was only verified on BMG with Torch 2.10 and remains
 disabled by default on other configurations.
 
+## Native compiled inference
+
+Upstream `TorchCompileModel` clones the diffusion model with
+`disable_dynamic=True`. That clone does not disable service-wide DynamicVRAM
+for text encoding or VAE execution. Match the service memory mode and model
+cloning when comparing eager and compiled performance; use ComfyUI's separate
+`--disable-dynamic-vram` option when explicitly selecting a service without
+DynamicVRAM.
+
+Compiled FP16/BF16 pointwise operations can round differently from eager even
+when each native operator matches. See the kernel package's
+[compiled-inference guidance](../omni_xpu_kernel/README.md#compiled-inference).
+On an installed Torch build that supports the option,
+`TORCHINDUCTOR_EMULATE_PRECISION_CASTS=1` before ComfyUI startup selects eager
+precision emulation for that process. This is an explicit numerical policy to
+validate for the model, not a default enabled by OmniXPU.
+
 ## Debugging and diagnostics
 
 Kernel-only tracing:
@@ -164,6 +181,13 @@ staging operation, including its XPU state and any failure, enable:
 OMNIXPU_LORA_MEMORY_TRACE=1 python main.py
 ```
 
+LoRA memory logs report `xpu_memory=available`, `partial`, or `unavailable`
+for the diagnostic snapshot, not GPU availability. Allocator counters and
+device free/total memory are queried independently; successful values remain
+visible if another query fails. Missing values are listed rather than reported
+as zero, and query errors include the interface, exception type and message.
+Statistics failures do not change LoRA budgets or interrupt model loading.
+
 Set tracing variables before startup. The **OmniXPU Status** node reports:
 
 - GPU and `omni_xpu_kernel` capabilities;
@@ -171,6 +195,11 @@ Set tracing variables before startup. The **OmniXPU Status** node reports:
 - each component's kind (`adapter`, `compatibility_patch`, or `legacy_fix`)
   and apply status;
 - attention and fused INT8 FFN routing counters.
+
+Attention, INT8 FFN and H3 RMS modulation counters record eager calls. During `torch.compile`,
+these diagnostic counters and logs are excluded from tracing so changing a
+counter cannot cause recompilation. Use the Torch profiler's operator events
+to inspect compiled native calls.
 
 Kitchen backend ownership can be inspected independently:
 
